@@ -1,0 +1,7 @@
+# Keyword Strategy Tool - Dependencies
+# Core (no external deps for programmatic mode)
+# Web UI:
+streamlit>=1.28.0
+pandas>=2.0.0
+# For AI expansion (optional):
+openai>=1.0.0
