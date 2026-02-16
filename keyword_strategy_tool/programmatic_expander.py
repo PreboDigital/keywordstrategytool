@@ -53,11 +53,46 @@ def _is_longtail(keyword: str, min_words: int = LONGTAIL_MIN_WORDS, max_words: i
     return wc >= min_words
 
 
+def _makes_sense(keyword: str) -> bool:
+    """Filter out redundant or nonsensical keywords (e.g. 'bath mats buy bath mats reviews')."""
+    words = keyword.lower().split()
+    if len(words) < 2:
+        return True
+    # Reject if any 2-word phrase appears twice (redundant)
+    for i in range(len(words) - 1):
+        bigram = f"{words[i]} {words[i+1]}"
+        if keyword.count(bigram) >= 2:
+            return False
+    return True
+
+
+# Words to strip when extracting core product (intent + location)
+_STRIP_WORDS = {
+    "south", "africa", "sale", "for", "online", "buy", "shop", "price", "deals", "specials",
+    "reviews", "vs", "comparison", "best", "top", "guide", "which", "recommended",
+    "how", "to", "choose", "what", "is", "why", "tips", "learn", "tutorial",
+    "discount", "cheap", "affordable",
+}
+
+
 def _extract_core_product(phrase: str) -> str:
-    """Extract core product term (remove location, for sale, etc.)."""
+    """Extract core product term (remove location, intent modifiers). Returns clean product phrase."""
     words = phrase.lower().split()
-    remove = {"south", "africa", "sale", "for", "online", "buy", "shop", "price", "deals", "specials"}
-    return " ".join(w for w in words if w not in remove)
+    cleaned = [w for w in words if w not in _STRIP_WORDS]
+    # Remove repeated phrases: "bath mats buy bath mats" -> "bath mats"
+    result = []
+    i = 0
+    while i < len(cleaned):
+        # Check if we're repeating a previous 2-word phrase
+        if i >= 2 and result and len(result) >= 2:
+            prev_bigram = f"{result[-2]} {result[-1]}"
+            curr_bigram = f"{cleaned[i]} {cleaned[i+1]}" if i + 1 < len(cleaned) else ""
+            if curr_bigram == prev_bigram:
+                i += 2
+                continue
+        result.append(cleaned[i])
+        i += 1
+    return " ".join(result) if result else ""
 
 
 def _build_modifiers_from_settings(settings: Optional["GenerationSettings"]) -> dict:
@@ -117,48 +152,55 @@ def expand_with_modifiers(
                 if count >= max_per_seed:
                     break
                 kw = f"{seed_norm} {loc}".strip()
-                if _is_longtail(kw, min_w, max_w) and kw not in seen:
+                if _is_longtail(kw, min_w, max_w) and kw not in seen and _makes_sense(kw):
                     seen.add(kw)
                     results.append(ExpandedKeyword(
                         keyword=kw,
                         intent="conversion" if any(x in kw for x in ["sale", "buy", "price"]) else "consideration",
                         source_keyword=seed,
-                        source="programmatic_modifier",
+                        source="programmatic",
                         priority=2 if "south africa" in loc.lower() or "africa" in loc.lower() else 1,
                     ))
                     count += 1
 
-        # Intent commercial (conversion)
+        # Intent commercial (conversion) - one conversion modifier per keyword
         if "intent_modifier" in kw_types:
             for intent in modifiers.get("intent_commercial", []):
                 if count >= max_per_seed:
                     break
-                for variant in [f"{seed_norm} {intent}", f"{intent} {seed_norm}"]:
-                    if _is_longtail(variant, min_w, max_w) and variant not in seen:
-                        seen.add(variant)
-                        results.append(ExpandedKeyword(
-                            keyword=variant,
-                            intent="conversion",
-                            source_keyword=seed,
-                            source="programmatic_modifier",
-                            priority=1,
-                        ))
-                        count += 1
-                        break
+                # Prefer "buy X" / "shop X" over "X buy" for action verbs
+                if intent in ("buy", "buy online", "shop", "shop online"):
+                    variant = f"{intent} {seed_norm}"
+                else:
+                    variant = f"{seed_norm} {intent}"
+                if _is_longtail(variant, min_w, max_w) and variant not in seen and _makes_sense(variant):
+                    seen.add(variant)
+                    results.append(ExpandedKeyword(
+                        keyword=variant,
+                        intent="conversion",
+                        source_keyword=seed,
+                        source="programmatic",
+                        priority=1,
+                    ))
+                    count += 1
 
-        # Intent consideration (high value for content)
+        # Intent consideration - "best X", "X reviews" (one modifier per keyword)
         if "intent_modifier" in kw_types:
             for intent in modifiers.get("intent_consideration", []):
                 if count >= max_per_seed:
                     break
-                kw = f"{seed_norm} {intent}".strip()
-                if _is_longtail(kw, min_w, max_w) and kw not in seen:
+                # "best", "top" go before product: "best coffee machine"
+                if intent in ("best", "top"):
+                    kw = f"{intent} {seed_norm}"
+                else:
+                    kw = f"{seed_norm} {intent}"
+                if _is_longtail(kw, min_w, max_w) and kw not in seen and _makes_sense(kw):
                     seen.add(kw)
                     results.append(ExpandedKeyword(
                         keyword=kw,
                         intent="consideration",
                         source_keyword=seed,
-                        source="programmatic_modifier",
+                        source="programmatic",
                         priority=3,
                     ))
                     count += 1
@@ -169,13 +211,13 @@ def expand_with_modifiers(
                 if count >= max_per_seed:
                     break
                 kw = f"{seed_norm} {intent}".strip()
-                if _is_longtail(kw, min_w, max_w) and kw not in seen:
+                if _is_longtail(kw, min_w, max_w) and kw not in seen and _makes_sense(kw):
                     seen.add(kw)
                     results.append(ExpandedKeyword(
                         keyword=kw,
                         intent="educational",
                         source_keyword=seed,
-                        source="programmatic_modifier",
+                        source="programmatic",
                         priority=2,
                     ))
                     count += 1
@@ -194,10 +236,10 @@ def expand_with_modifiers(
                             keyword=kw,
                             intent="conversion",
                             source_keyword=seed,
-                            source="programmatic_modifier",
+                            source="programmatic",
                             priority=1,
                         ))
-                        count += 1
+                    count += 1
 
     return results
 
@@ -251,37 +293,37 @@ def expand_from_patterns(
                 if "{location}" in kw and "location_based" in kw_types:
                     for loc in locations:
                         k = kw.replace("{location}", loc).strip()
-                        if _is_longtail(k, min_w, max_w) and k not in seen:
+                        if _is_longtail(k, min_w, max_w) and k not in seen and _makes_sense(k):
                             seen.add(k)
                             results.append(ExpandedKeyword(
                                 keyword=k,
                                 intent="consideration" if "reviews" in k or "vs" in k or "best" in k else "conversion",
                                 source_keyword=product,
-                                source="programmatic_pattern",
+                                source="programmatic",
                                 priority=2,
                             ))
                 elif "{attribute}" in kw and "product_attribute" in kw_types:
                     for attr in attributes:
                         k = kw.replace("{attribute}", attr).strip()
-                        if _is_longtail(k, min_w, max_w) and k not in seen:
+                        if _is_longtail(k, min_w, max_w) and k not in seen and _makes_sense(k):
                             seen.add(k)
                             results.append(ExpandedKeyword(
                                 keyword=k,
                                 intent="conversion",
                                 source_keyword=product,
-                                source="programmatic_pattern",
+                                source="programmatic",
                                 priority=1,
                             ))
                 elif "{color}" in kw and "product_attribute" in kw_types:
                     for color in colors:
                         k = kw.replace("{color}", color).strip()
-                        if _is_longtail(k, min_w, max_w) and k not in seen:
+                        if _is_longtail(k, min_w, max_w) and k not in seen and _makes_sense(k):
                             seen.add(k)
                             results.append(ExpandedKeyword(
                                 keyword=k,
                                 intent="conversion",
                                 source_keyword=product,
-                                source="programmatic_pattern",
+                                source="programmatic",
                                 priority=1,
                             ))
                 elif "{alternative}" in kw:
@@ -289,13 +331,13 @@ def expand_from_patterns(
                     # (e.g. "breville vs sage" not "couch vs cutlery")
                     continue
                 else:
-                    if _is_longtail(kw, min_w, max_w) and kw not in seen:
+                    if _is_longtail(kw, min_w, max_w) and kw not in seen and _makes_sense(kw):
                         seen.add(kw)
                         results.append(ExpandedKeyword(
                             keyword=kw,
                             intent="conversion",
                             source_keyword=product,
-                            source="programmatic_pattern",
+                            source="programmatic",
                             priority=1,
                         ))
             except (KeyError, ValueError):
@@ -317,15 +359,21 @@ def run_programmatic_expansion(
     min_w = (settings.min_words if settings else LONGTAIL_MIN_WORDS)
     max_w = (settings.max_words if settings else 0) or 999
 
-    # Collect seed keywords
-    seed_keywords = list({_normalize_keyword(s.keyword) for s in sources if s.keyword})
-    product_terms = list({_extract_core_product(s.keyword) for s in sources if s.keyword})
-    product_terms = [p for p in product_terms if len(p.split()) >= 1]
-
+    # Collect seed keywords (filter messy/redundant ones)
+    seed_keywords = [
+        kw for kw in {_normalize_keyword(s.keyword) for s in sources if s.keyword}
+        if kw and _makes_sense(kw)
+    ]
+    product_terms = [
+        p for p in {_extract_core_product(s.keyword) for s in sources if s.keyword}
+        if p and len(p.split()) >= 1 and _makes_sense(p)
+    ]
     # Add high-performing queries as seeds (from Search Console)
     for s in sources:
         if s.source == "search_console" and s.impressions >= 10:
-            seed_keywords.append(_normalize_keyword(s.keyword))
+            kw = _normalize_keyword(s.keyword)
+            if kw and _makes_sense(kw):
+                seed_keywords.append(kw)
 
     seed_keywords = list(dict.fromkeys(seed_keywords))[:500]  # Limit seeds
     product_terms = list(dict.fromkeys(product_terms))[:200]
