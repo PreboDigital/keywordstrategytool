@@ -48,20 +48,21 @@ def analyze_patterns_with_ai(
 Brand: {brand_name or "Generic"}
 Product context: {product_context or "Home goods, furniture, appliances"}
 
-Here are real search queries from Google Search Console (high-intent, consideration stage):
+Here are real search queries from Google Search Console:
 {json.dumps(sample, indent=2)}
 
-Analyze these queries and identify:
-1. COMMON PATTERNS: What structures repeat? (e.g., "brand + product + location", "product + for sale + location")
-2. INTENT SIGNALS: What words indicate buying intent vs research? (reviews, vs, best, price, deals)
-3. 10 NEW LONG-TAIL KEYWORDS: Generate 10 high-intent consideration keywords (3+ words each) that follow the same patterns but weren't in the list. Focus on commercial and consideration intent.
+Generate 15 UNIQUE ANGLE keywords - each must represent a DISTINCT search intent. No near-duplicates.
+- One angle = one searcher need (e.g. "reviews" vs "best" vs "price" are different angles)
+- Include: consideration (reviews, vs, best, comparison), conversion (for sale, price, buy), educational (how to, guide)
+- Add "south africa" where relevant for local SEO
+- Each keyword must be 3-6 words and NOT in the existing list
+- Avoid redundant variations (e.g. don't give both "X south africa" and "X in south africa")
 
 Respond in JSON only:
 {{
-  "patterns": ["pattern 1", "pattern 2", ...],
-  "intent_signals": {{"commercial": [...], "consideration": [...]}},
+  "patterns": ["pattern 1", "pattern 2"],
   "new_keywords": ["keyword 1", "keyword 2", ...],
-  "reasoning": "Brief explanation of patterns found"
+  "reasoning": "Brief explanation of unique angles identified"
 }}"""
 
     try:
@@ -77,9 +78,12 @@ Respond in JSON only:
             if content.startswith("json"):
                 content = content[4:]
         data = json.loads(content)
+        keywords = data.get("new_keywords", [])
+        # Dedupe and ensure 3+ words
+        keywords = list(dict.fromkeys(k for k in keywords if isinstance(k, str) and len(k.split()) >= 3))
         return AIPatternResult(
             pattern_type="ai_analysis",
-            keywords=data.get("new_keywords", []),
+            keywords=keywords,
             reasoning=data.get("reasoning", ""),
         )
     except Exception:
@@ -104,24 +108,23 @@ def generate_keywords_with_ai(
 
     existing = existing_queries[:30]
 
-    prompt = f"""You are an SEO strategist for Straider.ai's programmatic SEO platform. Generate high-intent CONSIDERATION and COMMERCIAL long-tail keywords for content that will rank and drive sales.
+    prompt = f"""You are an SEO strategist for Straider.ai. Generate UNIQUE ANGLE keywords - each must represent a DISTINCT search intent.
 
-PRODUCT PAGE:
-- URL: {product_url}
-- SEO Title: {seo_title}
-- SEO Description: {seo_description}
+PRODUCT: {seo_title}
+URL: {product_url}
+Description: {seo_description[:200]}...
 
-EXISTING SEARCH QUERIES (from Search Console - what people already search):
-{json.dumps(existing, indent=2)}
+EXISTING QUERIES (do not duplicate):
+{json.dumps(existing[:25], indent=2)}
 
-Generate {num_keywords} NEW long-tail keywords (3-6 words each) that:
-1. Follow the same patterns as existing queries
-2. Target consideration stage (reviews, vs, best, comparison, guide)
-3. Include location "south africa" where relevant
-4. Would attract buyers researching before purchase
-5. Are NOT duplicates of existing queries
+Generate {num_keywords} NEW keywords (3-6 words each). Rules:
+- ONE keyword per unique angle (reviews vs best vs price vs for sale = different angles)
+- Mix: consideration (reviews, vs, best), conversion (for sale, price, buy), educational (how to, guide)
+- Add "south africa" where it fits naturally
+- No near-duplicates (e.g. not both "X south africa" and "X in south africa")
+- Each keyword = distinct searcher need
 
-Return ONLY a JSON array of keyword strings, no explanation:
+Return ONLY a JSON array:
 ["keyword 1", "keyword 2", ...]"""
 
     try:

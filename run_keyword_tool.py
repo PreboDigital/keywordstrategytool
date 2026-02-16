@@ -27,7 +27,9 @@ from keyword_strategy_tool import (
     generate_keywords_with_ai,
     analyze_patterns_with_ai,
     ExpandedKeyword,
+    GenerationSettings,
 )
+from keyword_strategy_tool.programmatic_expander import _angle_key
 from keyword_strategy_tool.export import export_to_straider_csv
 
 
@@ -114,14 +116,16 @@ def main():
         print("No keyword sources loaded. Exiting.")
         sys.exit(1)
 
-    # Programmatic expansion
+    # Programmatic expansion (unique angles only)
+    settings = GenerationSettings()
     print("Running programmatic expansion...")
-    expanded = run_programmatic_expansion(sources, max_keywords=args.max_keywords)
+    expanded = run_programmatic_expansion(sources, max_keywords=args.max_keywords, settings=settings)
     print(f"Generated {len(expanded)} keywords (programmatic)")
 
-    # AI expansion (optional)
+    # AI expansion (optional) - unique angles, prioritised
     if args.use_ai and os.environ.get("OPENAI_API_KEY"):
-        print("Running AI-powered expansion...")
+        print("Running AI expansion (unique angles)...")
+        existing_angles = {_angle_key(e.keyword) for e in expanded}
         sample_queries = [s.keyword for s in sources if s.source == "search_console"][:50]
         ai_pattern = analyze_patterns_with_ai(
             sample_queries,
@@ -129,20 +133,17 @@ def main():
             brand_name=args.brand or "Bash",
         )
         if ai_pattern:
-            print(f"AI discovered patterns: {ai_pattern.reasoning[:100]}...")
+            print(f"AI: {ai_pattern.reasoning[:80]}...")
             for kw in ai_pattern.keywords:
-                if kw not in {e.keyword for e in expanded}:
+                if kw not in {e.keyword for e in expanded} and _angle_key(kw) not in existing_angles:
                     expanded.append(ExpandedKeyword(
-                        keyword=kw,
-                        intent="consideration",
-                        source_keyword="ai",
-                        source="ai_generated",
-                        product_url=None,
-                        seo_title=None,
-                        priority=3,
+                        keyword=kw, intent="consideration",
+                        source_keyword="ai", source="ai",
+                        product_url=None, seo_title=None, priority=4,
                     ))
+                    existing_angles.add(_angle_key(kw))
 
-        # Per-product AI generation (top 5 pages)
+        # Per-product AI (top 5 pages)
         if args.product_pages:
             pages = load_product_pages(args.product_pages)
             for page in pages[:5]:
@@ -152,11 +153,14 @@ def main():
                     seo_description=page.seo_description,
                     existing_queries=[s.keyword for s in sources][:30],
                     brand_name=args.brand,
-                    num_keywords=20,
+                    num_keywords=25,
                 )
                 for ai_kw in ai_kws:
-                    if ai_kw.keyword not in {e.keyword for e in expanded}:
+                    if ai_kw.keyword not in {e.keyword for e in expanded} and _angle_key(ai_kw.keyword) not in existing_angles:
+                        ai_kw.source = "ai"
+                        ai_kw.priority = 4
                         expanded.append(ai_kw)
+                        existing_angles.add(_angle_key(ai_kw.keyword))
 
         print(f"Total after AI: {len(expanded)} keywords")
     elif args.use_ai and not os.environ.get("OPENAI_API_KEY"):

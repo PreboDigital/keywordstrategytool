@@ -53,6 +53,24 @@ def _is_longtail(keyword: str, min_words: int = LONGTAIL_MIN_WORDS, max_words: i
     return wc >= min_words
 
 
+def _angle_key(keyword: str) -> str:
+    """
+    Canonical key for unique angle deduplication.
+    Same angle = same search intent (e.g. 'bath mats south africa' = 'bath mats in south africa').
+    """
+    kw = " ".join(keyword.lower().split())
+    # Normalize equivalent variants
+    for old, new in [
+        ("in south africa", "south africa"),
+        ("online south africa", "south africa"),
+        ("for sale online", "for sale"),
+        ("buy online", "buy"),
+        ("shop online", "shop"),
+    ]:
+        kw = kw.replace(old, new)
+    return kw
+
+
 def _makes_sense(keyword: str) -> bool:
     """Filter out redundant or nonsensical keywords (e.g. 'bath mats buy bath mats reviews')."""
     words = keyword.lower().split()
@@ -427,5 +445,12 @@ def run_programmatic_expansion(
         if k not in by_kw or e.priority > by_kw[k].priority:
             by_kw[k] = e
 
-    result = sorted(by_kw.values(), key=lambda x: (-x.priority, x.keyword))[:max_keywords]
+    # Unique angles: one keyword per semantic angle (avoid 'bath mats south africa' + 'bath mats in south africa')
+    by_angle = {}
+    for e in by_kw.values():
+        angle = _angle_key(e.keyword)
+        if angle not in by_angle or e.priority > by_angle[angle].priority:
+            by_angle[angle] = e
+
+    result = sorted(by_angle.values(), key=lambda x: (-x.priority, x.keyword))[:max_keywords]
     return result

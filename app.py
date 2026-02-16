@@ -108,7 +108,11 @@ with col2:
 
     st.subheader("Options")
     max_keywords = st.number_input("Max keywords", min_value=100, max_value=50000, value=5000, step=500)
-    use_ai = st.checkbox("Use AI expansion (requires OPENAI_API_KEY)", value=False)
+    use_ai = st.checkbox(
+        "Use AI expansion (recommended - unique angles)",
+        value=bool(os.environ.get("OPENAI_API_KEY")),
+        help="Uses AI to generate distinct search-intent keywords. Requires OPENAI_API_KEY.",
+    )
     brand = st.text_input("Brand name (for AI context)", placeholder="e.g. Bash")
     run_in_background = st.checkbox(
         "Run in background (for large jobs, avoids timeout)",
@@ -160,16 +164,41 @@ def run_generation(
         expanded = run_programmatic_expansion(sources, max_keywords=max_keywords, settings=settings)
 
         if use_ai and os.environ.get("OPENAI_API_KEY"):
+            from keyword_strategy_tool.programmatic_expander import _angle_key
+            existing_angles = {_angle_key(e.keyword) for e in expanded}
             sample = [s.keyword for s in sources if s.source == "search_console"][:50]
             ai_result = analyze_patterns_with_ai(sample, brand_name=brand or "Bash")
             if ai_result:
                 for kw in ai_result.keywords:
-                    if kw not in {e.keyword for e in expanded}:
+                    if kw not in {e.keyword for e in expanded} and _angle_key(kw) not in existing_angles:
                         expanded.append(ExpandedKeyword(
                             keyword=kw, intent="consideration",
-                            source_keyword="ai", source="ai_generated",
-                            product_url=None, seo_title=None, priority=3,
+                            source_keyword="ai", source="ai",
+                            product_url=None, seo_title=None, priority=4,
                         ))
+                        existing_angles.add(_angle_key(kw))
+            # Per-product AI (top 5 pages)
+            if pp_bytes:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as f:
+                    f.write(pp_bytes)
+                    f.flush()
+                    pages = load_product_pages(f.name)
+                    os.unlink(f.name)
+                for page in pages[:5]:
+                    ai_kws = generate_keywords_with_ai(
+                        product_url=page.url,
+                        seo_title=page.seo_title,
+                        seo_description=page.seo_description,
+                        existing_queries=[s.keyword for s in sources][:30],
+                        brand_name=brand,
+                        num_keywords=25,
+                    )
+                    for ai_kw in ai_kws:
+                        if ai_kw.keyword not in {e.keyword for e in expanded} and _angle_key(ai_kw.keyword) not in existing_angles:
+                            ai_kw.source = "ai"
+                            ai_kw.priority = 4
+                            expanded.append(ai_kw)
+                            existing_angles.add(_angle_key(ai_kw.keyword))
 
         seen = set()
         unique = []
@@ -256,17 +285,20 @@ if st.button("Generate keywords", type="primary"):
                     expanded = run_programmatic_expansion(sources, max_keywords=max_keywords, settings=settings)
 
                     if use_ai and os.environ.get("OPENAI_API_KEY"):
-                        with st.spinner("AI expansion..."):
+                        with st.spinner("AI expansion (unique angles)..."):
+                            from keyword_strategy_tool.programmatic_expander import _angle_key
                             sample = [s.keyword for s in sources if s.source == "search_console"][:50]
                             ai_result = analyze_patterns_with_ai(sample, brand_name=brand or "Bash")
+                            existing_angles = {_angle_key(e.keyword) for e in expanded}
                             if ai_result:
                                 for kw in ai_result.keywords:
-                                    if kw not in {e.keyword for e in expanded}:
+                                    if kw not in {e.keyword for e in expanded} and _angle_key(kw) not in existing_angles:
                                         expanded.append(ExpandedKeyword(
                                             keyword=kw, intent="consideration",
-                                            source_keyword="ai", source="ai_generated",
-                                            product_url=None, seo_title=None, priority=3,
+                                            source_keyword="ai", source="ai",
+                                            product_url=None, seo_title=None, priority=4,
                                         ))
+                                        existing_angles.add(_angle_key(kw))
 
                     seen = set()
                     unique = []
