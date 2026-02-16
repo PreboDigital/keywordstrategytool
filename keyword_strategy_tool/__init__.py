@@ -22,6 +22,7 @@ from .programmatic_expander import (
 from .ai_expander import (
     analyze_patterns_with_ai,
     generate_keywords_with_ai,
+    generate_keywords_ai_only,
 )
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "run_programmatic_expansion",
     "analyze_patterns_with_ai",
     "generate_keywords_with_ai",
+    "generate_keywords_ai_only",
     "ExpandedKeyword",
     "KeywordSource",
     "ProductPage",

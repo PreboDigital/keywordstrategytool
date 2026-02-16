@@ -29,6 +29,97 @@ def _get_openai_client():
         return None
 
 
+def generate_keywords_ai_only(
+    search_queries: list[str],
+    product_pages: list,
+    brand_name: str = "",
+    max_keywords: int = 2000,
+) -> list[ExpandedKeyword]:
+    """
+    AI-only generation: no programmatic expansion. Uses LLM to generate
+    diverse, natural keywords from Search Console + product page data.
+    """
+    client = _get_openai_client()
+    if not client or not os.environ.get("OPENAI_API_KEY"):
+        return []
+
+    results = []
+    seen = set()
+
+    # 1. Global batch from Search Console queries
+    if search_queries:
+        sample = search_queries[:80]
+        prompt = f"""You are an SEO expert. Generate high-intent, natural long-tail keywords for an eCommerce brand.
+
+Brand: {brand_name or "Bash"}
+Real search queries from Google Search Console:
+{json.dumps(sample, indent=2)}
+
+Generate 80 NEW keywords (3-6 words each). Rules:
+- Write like a real person searching - natural phrasing, not templates
+- Each keyword = distinct search intent (reviews, best, price, how to, for sale, etc.)
+- Include "south africa" where it fits naturally
+- NO formulaic patterns like "product location buy modifier" - vary structure
+- Examples of GOOD: "best breville coffee machine south africa", "where to buy egyptian cotton bedding", "haden air fryer vs instant pot"
+- Examples of BAD: "bedroom cabinets south africa buy reviews", "bedroom chairs south africa buy guide"
+
+Return ONLY a JSON array of strings:
+["keyword 1", "keyword 2", ...]"""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+            )
+            content = response.choices[0].message.content.strip()
+            if "```" in content:
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            keywords = json.loads(content)
+            if isinstance(keywords, list):
+                for kw in keywords:
+                    if not isinstance(kw, str):
+                        continue
+                    k = kw.strip().lower()
+                    if len(k.split()) >= 3 and k not in seen:
+                        seen.add(k)
+                        results.append(ExpandedKeyword(
+                            keyword=k, intent="consideration",
+                            source_keyword="search_console", source="ai",
+                            product_url=None, seo_title=None, priority=4,
+                        ))
+        except Exception:
+            pass
+
+    # 2. Per-product batches (richer, page-specific)
+    pages_to_process = min(len(product_pages), 25)
+    kw_per_page = max(40, (max_keywords - len(results)) // max(pages_to_process, 1))
+
+    for page in product_pages[:pages_to_process]:
+        if len(results) >= max_keywords:
+            break
+        existing = search_queries[:20] if search_queries else []
+        ai_kws = generate_keywords_with_ai(
+            product_url=page.url,
+            seo_title=page.seo_title,
+            seo_description=page.seo_description,
+            existing_queries=existing,
+            brand_name=brand_name,
+            num_keywords=min(kw_per_page, 60),
+        )
+        for e in ai_kws:
+            k = e.keyword.lower().strip()
+            if k not in seen and len(k.split()) >= 3:
+                seen.add(k)
+                e.source = "ai"
+                e.priority = 4
+                results.append(e)
+
+    return results[:max_keywords]
+
+
 def analyze_patterns_with_ai(
     sample_queries: list[str],
     product_context: str = "",
@@ -108,21 +199,21 @@ def generate_keywords_with_ai(
 
     existing = existing_queries[:30]
 
-    prompt = f"""You are an SEO strategist for Straider.ai. Generate UNIQUE ANGLE keywords - each must represent a DISTINCT search intent.
+    prompt = f"""You are an SEO strategist. Generate natural, high-intent keywords - write like real people search.
 
 PRODUCT: {seo_title}
 URL: {product_url}
-Description: {seo_description[:200]}...
+Description: {seo_description[:200] if seo_description else ""}...
 
-EXISTING QUERIES (do not duplicate):
+EXISTING (do not duplicate):
 {json.dumps(existing[:25], indent=2)}
 
-Generate {num_keywords} NEW keywords (3-6 words each). Rules:
-- ONE keyword per unique angle (reviews vs best vs price vs for sale = different angles)
-- Mix: consideration (reviews, vs, best), conversion (for sale, price, buy), educational (how to, guide)
-- Add "south africa" where it fits naturally
-- No near-duplicates (e.g. not both "X south africa" and "X in south africa")
-- Each keyword = distinct searcher need
+Generate {num_keywords} NEW keywords (3-6 words). Rules:
+- Natural phrasing - NOT templates like "product location buy modifier"
+- Mix: reviews, best, vs, price, for sale, how to, where to buy
+- Add "south africa" where natural
+- GOOD: "best breville coffee machine south africa", "egyptian cotton bedding reviews"
+- BAD: "bedroom cabinets south africa buy reviews", "product location intent modifier"
 
 Return ONLY a JSON array:
 ["keyword 1", "keyword 2", ...]"""

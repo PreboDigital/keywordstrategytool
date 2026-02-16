@@ -24,6 +24,7 @@ from keyword_strategy_tool import (
     product_pages_to_keyword_sources,
     search_console_to_keyword_sources,
     run_programmatic_expansion,
+    generate_keywords_ai_only,
     generate_keywords_with_ai,
     analyze_patterns_with_ai,
     ExpandedKeyword,
@@ -108,10 +109,15 @@ with col2:
 
     st.subheader("Options")
     max_keywords = st.number_input("Max keywords", min_value=100, max_value=50000, value=5000, step=500)
+    ai_only = st.checkbox(
+        "AI only (no programmatic)",
+        value=True,
+        help="Use only AI to generate natural keywords. Requires OPENAI_API_KEY. Uncheck to combine with programmatic.",
+    )
     use_ai = st.checkbox(
-        "Use AI expansion (recommended - unique angles)",
+        "Use AI expansion",
         value=bool(os.environ.get("OPENAI_API_KEY")),
-        help="Uses AI to generate distinct search-intent keywords. Requires OPENAI_API_KEY.",
+        help="Include AI-generated keywords. When 'AI only' is on, this is required.",
     )
     brand = st.text_input("Brand name (for AI context)", placeholder="e.g. Bash")
     run_in_background = st.checkbox(
@@ -128,6 +134,7 @@ def run_generation(
     settings: GenerationSettings,
     max_keywords: int,
     use_ai: bool,
+    ai_only: bool,
     brand: str,
     job_id: str,
 ):
@@ -135,6 +142,7 @@ def run_generation(
     try:
         st.session_state.jobs[job_id]["status"] = "loading"
         sources = []
+        pages = []
 
         if sc_bytes:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as f:
@@ -161,9 +169,19 @@ def run_generation(
                 os.unlink(f.name)
 
         st.session_state.jobs[job_id]["status"] = "expanding"
-        expanded = run_programmatic_expansion(sources, max_keywords=max_keywords, settings=settings)
 
-        if use_ai and os.environ.get("OPENAI_API_KEY"):
+        if ai_only and os.environ.get("OPENAI_API_KEY"):
+            search_queries = [s.keyword for s in sources if s.source == "search_console"]
+            expanded = generate_keywords_ai_only(
+                search_queries=search_queries,
+                product_pages=pages,
+                brand_name=brand or "Bash",
+                max_keywords=max_keywords,
+            )
+        else:
+            expanded = run_programmatic_expansion(sources, max_keywords=max_keywords, settings=settings)
+
+        if not ai_only and use_ai and os.environ.get("OPENAI_API_KEY"):
             from keyword_strategy_tool.programmatic_expander import _angle_key
             existing_angles = {_angle_key(e.keyword) for e in expanded}
             sample = [s.keyword for s in sources if s.source == "search_console"][:50]
@@ -225,6 +243,8 @@ def run_generation(
 if st.button("Generate keywords", type="primary"):
     if not search_console_file and not product_pages_file:
         st.error("Upload at least Search Console or Product Pages CSV")
+    elif ai_only and not os.environ.get("OPENAI_API_KEY"):
+        st.error("AI only mode requires OPENAI_API_KEY. Add it in Railway Variables or .env")
     else:
         settings = GenerationSettings(
             intents=intents or ["educational", "consideration", "conversion"],
@@ -233,6 +253,8 @@ if st.button("Generate keywords", type="primary"):
             min_words=min_words,
             max_words=max_words if max_words > 0 else 0,
         )
+
+        use_ai_or_ai_only = use_ai or ai_only
 
         if run_in_background:
             job_id = str(uuid.uuid4())[:8]
@@ -244,7 +266,7 @@ if st.button("Generate keywords", type="primary"):
             ga_bytes = google_ads_file.getvalue() if google_ads_file else None
 
             def run():
-                run_generation(sc_bytes, pp_bytes, ga_bytes, settings, max_keywords, use_ai, brand, job_id)
+                run_generation(sc_bytes, pp_bytes, ga_bytes, settings, max_keywords, use_ai, ai_only, brand, job_id)
 
             thread = threading.Thread(target=run)
             thread.start()
@@ -281,24 +303,39 @@ if st.button("Generate keywords", type="primary"):
                     st.success(f"Loaded {len(ads)} Google Ads terms")
 
             if sources:
-                with st.spinner("Expanding keywords..."):
-                    expanded = run_programmatic_expansion(sources, max_keywords=max_keywords, settings=settings)
-
-                    if use_ai and os.environ.get("OPENAI_API_KEY"):
-                        with st.spinner("AI expansion (unique angles)..."):
-                            from keyword_strategy_tool.programmatic_expander import _angle_key
-                            sample = [s.keyword for s in sources if s.source == "search_console"][:50]
-                            ai_result = analyze_patterns_with_ai(sample, brand_name=brand or "Bash")
-                            existing_angles = {_angle_key(e.keyword) for e in expanded}
-                            if ai_result:
-                                for kw in ai_result.keywords:
-                                    if kw not in {e.keyword for e in expanded} and _angle_key(kw) not in existing_angles:
-                                        expanded.append(ExpandedKeyword(
-                                            keyword=kw, intent="consideration",
-                                            source_keyword="ai", source="ai",
-                                            product_url=None, seo_title=None, priority=4,
-                                        ))
-                                        existing_angles.add(_angle_key(kw))
+                with st.spinner("AI generating keywords..." if ai_only else "Expanding keywords..."):
+                    if ai_only and os.environ.get("OPENAI_API_KEY"):
+                        pages = []
+                        if product_pages_file:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tf:
+                                tf.write(product_pages_file.getvalue())
+                                tf.flush()
+                                pages = load_product_pages(tf.name)
+                                os.unlink(tf.name)
+                        search_queries = [s.keyword for s in sources if s.source == "search_console"]
+                        expanded = generate_keywords_ai_only(
+                            search_queries=search_queries,
+                            product_pages=pages,
+                            brand_name=brand or "Bash",
+                            max_keywords=max_keywords,
+                        )
+                    else:
+                        expanded = run_programmatic_expansion(sources, max_keywords=max_keywords, settings=settings)
+                        if use_ai and os.environ.get("OPENAI_API_KEY"):
+                            with st.spinner("AI expansion..."):
+                                from keyword_strategy_tool.programmatic_expander import _angle_key
+                                sample = [s.keyword for s in sources if s.source == "search_console"][:50]
+                                ai_result = analyze_patterns_with_ai(sample, brand_name=brand or "Bash")
+                                existing_angles = {_angle_key(e.keyword) for e in expanded}
+                                if ai_result:
+                                    for kw in ai_result.keywords:
+                                        if kw not in {e.keyword for e in expanded} and _angle_key(kw) not in existing_angles:
+                                            expanded.append(ExpandedKeyword(
+                                                keyword=kw, intent="consideration",
+                                                source_keyword="ai", source="ai",
+                                                product_url=None, seo_title=None, priority=4,
+                                            ))
+                                            existing_angles.add(_angle_key(kw))
 
                     seen = set()
                     unique = []
