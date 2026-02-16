@@ -6,7 +6,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN chmod +x run.sh
 
 EXPOSE 8080
 ENV PORT=8080
-CMD ["sh", "-c", "streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"]
+CMD ["./run.sh"]
